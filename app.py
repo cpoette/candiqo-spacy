@@ -326,3 +326,74 @@ def xp_parse(payload: dict):
         }
 
     return out
+
+
+@app.post("/v1/xp/extract_simple")
+def xp_extract_simple(payload: dict):
+    """
+    Simple entity extraction approach:
+    - Use spaCy to tag ORG, DATE, LOC
+    - Everything else = likely job title
+    
+    Input:
+      - text: string (single XP line or block)
+      - debug: optional bool
+    
+    Output:
+      - orgs: list of ORG entities
+      - dates: list of DATE entities  
+      - locations: list of LOC entities
+      - job_title: everything that's not tagged (cleaned)
+    """
+    text = payload.get("text", "")
+    debug = bool(payload.get("debug", DEBUG_DEFAULT))
+    
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="text is required (string)")
+    if len(text) > MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"text too large (>{MAX_CHARS} chars)")
+    
+    # Clean input
+    text = clean_common(text)
+    
+    # SpaCy NER
+    doc = nlp(text)
+    
+    orgs = [e.text.strip() for e in doc.ents if e.label_ == "ORG"]
+    dates = [e.text.strip() for e in doc.ents if e.label_ == "DATE"]
+    locations = [e.text.strip() for e in doc.ents if e.label_ == "LOC"]
+    
+    # Build set of tagged token indices
+    tagged_indices = set()
+    for ent in doc.ents:
+        for i in range(ent.start, ent.end):
+            tagged_indices.add(i)
+    
+    # Extract job title = non-tagged, non-stop, non-punct tokens
+    job_title_tokens = [
+        token.text for token in doc 
+        if token.i not in tagged_indices 
+        and not token.is_punct 
+        and not token.is_stop
+        and token.text.strip()
+    ]
+    job_title = " ".join(job_title_tokens).strip()
+    
+    result = {
+        "orgs": orgs,
+        "dates": dates,
+        "locations": locations,
+        "job_title": job_title,
+    }
+    
+    if debug:
+        result["debug"] = {
+            "all_entities": [
+                {"text": e.text, "label": e.label_, "start": e.start_char, "end": e.end_char} 
+                for e in doc.ents
+            ],
+            "tagged_token_count": len(tagged_indices),
+            "total_token_count": len(doc),
+        }
+    
+    return result
